@@ -1,0 +1,269 @@
+{
+  "name": "Topic 11 - Database Design for Automation deb",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -416,
+        0
+      ],
+      "id": "afd8a1c7-0ddb-466a-85fa-3d892f79efab",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst staticData = $getWorkflowStaticData('global');\n\nstaticData.customers = [\n  {\n    customerId: \"CUST-001\",\n    name: \"Acme Corp\",\n    balance: 1200,\n    creditLimit: 5000\n  },\n  {\n    customerId: \"CUST-002\",\n    name: \"Globex Inc\",\n    balance: 450,\n    creditLimit: 500\n  }\n];\n\nstaticData.orders = [];\nstaticData.orderItems = [];\n\nreturn [\n  {\n    json: {\n      status: \"DATABASE_INITIALIZED\",\n      tables: [\n        \"customers\",\n        \"orders\",\n        \"order_items\"\n      ],\n      customerCount: staticData.customers.length,\n      timestamp: new Date().toISOString()\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -192,
+        0
+      ],
+      "id": "8f9e32d0-4f41-4be0-b77a-8a9b708ad00f",
+      "name": "Code_InitRelationalDB"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nreturn [\n  {\n    json: {\n      orderId: \"ORD-DB-5001\",\n      customerId: \"CUST-001\",\n      orderDate: new Date().toISOString(),\n      lineItems: [\n        {\n          sku: \"SKU-SRV-01\",\n          description: \"Cloud Managed Server\",\n          quantity: 2,\n          unitPrice: 450\n        },\n        {\n          sku: \"SKU-LIC-02\",\n          description: \"Enterprise Security Seat\",\n          quantity: 5,\n          unitPrice: 75\n        }\n      ]\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        32,
+        0
+      ],
+      "id": "49d78c83-72ff-4860-81c1-4e93e6c771af",
+      "name": "Code_StageIncomingOrder"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst order = $input.item.json;\n\nconst orderTotal = order.lineItems.reduce(\n  (sum, item) => sum + item.quantity * item.unitPrice,\n  0\n);\n\nconst orderHeader = {\n  orderId: order.orderId,\n  customerId: order.customerId,\n  orderDate: order.orderDate,\n  totalAmount: orderTotal,\n  status: \"PENDING\"\n};\n\nreturn {\n  json: {\n    ...order,\n    orderHeader,\n    transactionStatus: \"HEADER_STAGED\"\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        256,
+        0
+      ],
+      "id": "e0b9b626-bcf0-4a00-a2a3-041bd4a5ceb6",
+      "name": "Code_StageIncomingOrder1"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst order = $input.item.json;\n\nconst orderItems = order.lineItems.map((item, index) => ({\n  orderItemId: `${order.orderId}-ITEM-${index + 1}`,\n  orderId: order.orderId,\n  sku: item.sku,\n  description: item.description,\n  quantity: item.quantity,\n  unitPrice: item.unitPrice,\n  lineTotal: item.quantity * item.unitPrice\n}));\n\nconst calculatedTotal = orderItems.reduce(\n  (sum, item) => sum + item.lineTotal,\n  0\n);\n\nif (calculatedTotal !== order.orderHeader.totalAmount) {\n  throw new Error(\"Order total does not match item totals\");\n}\n\nreturn {\n  json: {\n    ...order,\n    orderItems,\n    calculatedTotal,\n    transactionStatus: \"ITEMS_STAGED\"\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ],
+      "id": "86b0cd26-ccbc-4cb8-93c8-46e4666bffe1",
+      "name": "Code_InsertOrderItems"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst order = $input.item.json;\n\n// Customer record from our simulated database\nconst customers = [\n  {\n    customerId: \"CUST-001\",\n    name: \"Acme Corp\",\n    balance: 1200,\n    creditLimit: 5000\n  },\n  {\n    customerId: \"CUST-002\",\n    name: \"Globex Inc\",\n    balance: 450,\n    creditLimit: 500\n  }\n];\n\nconst customer = customers.find(\n  c => c.customerId === order.customerId\n);\n\nif (!customer) {\n  return {\n    json: {\n      ...order,\n      transactionSucceeded: false,\n      transactionStatus: \"ROLLBACK_REQUIRED\",\n      reason: \"Customer not found\"\n    }\n  };\n}\n\nconst orderAmount = order.calculatedTotal;\nconst previousBalance = customer.balance;\nconst updatedBalance = previousBalance + orderAmount;\n\nconst withinCreditLimit =\n  updatedBalance <= customer.creditLimit;\n\nreturn {\n  json: {\n    ...order,\n    customerName: customer.name,\n    previousBalance,\n    orderAmount,\n    updatedBalance: withinCreditLimit\n      ? updatedBalance\n      : previousBalance,\n    creditLimit: customer.creditLimit,\n    transactionSucceeded: withinCreditLimit,\n    transactionStatus: withinCreditLimit\n      ? \"READY_TO_COMMIT\"\n      : \"ROLLBACK_REQUIRED\",\n    reason: withinCreditLimit\n      ? \"Credit limit validation passed\"\n      : \"Credit limit exceeded\"\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        688,
+        0
+      ],
+      "id": "be37a3ae-fab1-4b02-9d53-9e30460427cc",
+      "name": "Code_UpdateCustomerBalance"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "6657784f-4e2f-4ee3-b3f5-f0dd14e66c23",
+              "leftValue": "={{ $json.transactionSucceeded }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        912,
+        0
+      ],
+      "id": "45cc05f5-e6eb-4aef-b844-5878236cbbee",
+      "name": "IF_TransactionSucceeded"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst order = $input.item.json;\n\nreturn {\n  json: {\n    auditEvent: \"TRANSACTION_ROLLBACK\",\n    transactionStatus: \"ROLLED_BACK\",\n    orderId: order.orderId,\n    customerId: order.customerId,\n    orderAmount: order.orderAmount,\n    previousBalance: order.previousBalance,\n    creditLimit: order.creditLimit,\n    reason: order.reason || \"Transaction validation failed\",\n    message: \"Transaction rejected. No changes committed.\",\n    loggedAt: new Date().toISOString()\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1184,
+        80
+      ],
+      "id": "11c00128-228c-451e-bef6-ade06aa20a14",
+      "name": "Log_RollbackIncident"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst data = $input.item.json;\n\nconst fullOrder = {\n  orderId: data.orderId,\n  customerId: data.customerId,\n  customerName: data.customerName,\n  orderDate: data.orderDate,\n  orderStatus: \"COMMITTED\",\n  orderItems: data.orderItems,\n  totalItems: data.orderItems.length,\n  totalAmount: data.calculatedTotal,\n  previousBalance: data.previousBalance,\n  updatedBalance: data.updatedBalance,\n  creditLimit: data.creditLimit,\n  transactionStatus: \"COMMITTED\"\n};\n\nreturn {\n  json: fullOrder\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1152,
+        -96
+      ],
+      "id": "460612ac-3e2f-47e1-abf6-51779d14762a",
+      "name": "Code_QueryFullOrderJoin"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst order = $input.item.json;\n\n// Validate order item totals\nconst itemTotal = order.orderItems.reduce(\n  (sum, item) => sum + Number(item.lineTotal),\n  0\n);\n\nconst totalMatches = itemTotal === order.totalAmount;\n\nconst creditValid =\n  order.updatedBalance <= order.creditLimit;\n\nconst transactionValid =\n  order.transactionStatus === \"COMMITTED\" &&\n  totalMatches &&\n  creditValid;\n\nreturn {\n  json: {\n    auditStatus: transactionValid\n      ? \"TRANSACTION_VERIFIED\"\n      : \"VALIDATION_FAILED\",\n\n    orderId: order.orderId,\n    customerId: order.customerId,\n    customerName: order.customerName,\n\n    transactionStatus: order.transactionStatus,\n\n    totalItems: order.totalItems,\n    orderTotal: order.totalAmount,\n    calculatedItemTotal: itemTotal,\n\n    totalMatches,\n    creditValid,\n    transactionValid,\n\n    previousBalance: order.previousBalance,\n    updatedBalance: order.updatedBalance,\n    creditLimit: order.creditLimit,\n\n    auditTimestamp: new Date().toISOString()\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        -96
+      ],
+      "id": "abd80f87-cc2a-4cd7-91b5-c0f89b947e04",
+      "name": "Code_FinalTransactionAudit"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Code_InitRelationalDB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_InitRelationalDB": {
+      "main": [
+        [
+          {
+            "node": "Code_StageIncomingOrder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_StageIncomingOrder": {
+      "main": [
+        [
+          {
+            "node": "Code_StageIncomingOrder1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_StageIncomingOrder1": {
+      "main": [
+        [
+          {
+            "node": "Code_InsertOrderItems",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_InsertOrderItems": {
+      "main": [
+        [
+          {
+            "node": "Code_UpdateCustomerBalance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_UpdateCustomerBalance": {
+      "main": [
+        [
+          {
+            "node": "IF_TransactionSucceeded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_TransactionSucceeded": {
+      "main": [
+        [
+          {
+            "node": "Code_QueryFullOrderJoin",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log_RollbackIncident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_QueryFullOrderJoin": {
+      "main": [
+        [
+          {
+            "node": "Code_FinalTransactionAudit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "7980406e-c381-482d-99b1-713d35687402",
+  "meta": {
+    "instanceId": "a03c7678428ef19ededbf912f16f7d5798ec7b9ab4c17f2a2def6a9e791e7215"
+  },
+  "nodeGroups": [],
+  "id": "GwTWGhFgWPJL1eR6",
+  "tags": []
+}
